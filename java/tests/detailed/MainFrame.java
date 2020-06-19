@@ -42,12 +42,13 @@ import tests.detailed.handler.RequestHandler;
 import tests.detailed.ui.ControlPanel;
 import tests.detailed.ui.MenuBar;
 import tests.detailed.ui.StatusPanel;
+import tests.detailed.util.DataUri;
 
 public class MainFrame extends BrowserFrame {
     private static final long serialVersionUID = -2295538706810864538L;
     public static void main(String[] args) {
         // Perform startup initialization on platforms that require it.
-        if (!CefApp.startup()) {
+        if (!CefApp.startup(args)) {
             System.out.println("Startup initialization failed!");
             return;
         }
@@ -173,7 +174,7 @@ public class MainFrame extends BrowserFrame {
                 status_panel_.setIsInProgress(isLoading);
 
                 if (!isLoading && !errorMsg_.isEmpty()) {
-                    browser.loadString(errorMsg_, control_pane_.getAddress());
+                    browser.loadURL(DataUri.create("text/html", errorMsg_));
                     errorMsg_ = "";
                 }
             }
@@ -240,7 +241,7 @@ public class MainFrame extends BrowserFrame {
 
         menuBar.addBookmark("Binding Test", "client://tests/binding_test.html");
         menuBar.addBookmark("Binding Test 2", "client://tests/binding_test2.html");
-        menuBar.addBookmark("Download Test", "http://cefbuilds.com");
+        menuBar.addBookmark("Download Test", "http://opensource.spotify.com/cefbuilds/index.html");
         menuBar.addBookmark("Login Test (username:pumpkin, password:pie)",
                 "http://www.colostate.edu/~ric/protect/your.html");
         menuBar.addBookmark("Certificate-error Test", "https://www.k2go.de");

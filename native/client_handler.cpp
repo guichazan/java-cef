@@ -36,6 +36,26 @@
 #include "jni_util.h"
 #include "util.h"
 
+namespace {
+
+CefRefPtr<CefMessageRouter> GetMessageRouter(JNIEnv* env,
+                                             jobject jmessageRouter) {
+  ScopedJNIMessageRouter messageRouter(env);
+  messageRouter.SetHandle(jmessageRouter, false /* should_delete */);
+  return messageRouter.GetCefObject();
+}
+
+CefMessageRouterConfig GetMessageRouterConfig(JNIEnv* env,
+                                              jobject jmessageRouter) {
+  ScopedJNIObjectResult jrouterConfig(env);
+  JNI_CALL_METHOD(env, jmessageRouter, "getMessageRouterConfig",
+                  "()Lorg/cef/browser/CefMessageRouter$CefMessageRouterConfig;",
+                  Object, jrouterConfig);
+  return GetJNIMessageRouterConfig(env, jrouterConfig);
+}
+
+}  // namespace
+
 ClientHandler::ClientHandler(JNIEnv* env, jobject handler)
     : handle_(env, handler) {}
 
@@ -55,8 +75,11 @@ CefRefPtr<T> ClientHandler::GetHandler(const char* class_name) {
   ss << "()Lorg/cef/handler/" << className << ";";
   methodSig = ss.str();
 
+  ScopedJNIEnv env;
+  if (!env)
+    return nullptr;
+
   CefRefPtr<T> result = NULL;
-  BEGIN_ENV(env)
   ScopedJNIObjectResult jresult(env);
   JNI_CALL_METHOD(env, handle_, methodName.c_str(), methodSig.c_str(), Object,
                   jresult);
@@ -65,7 +88,7 @@ CefRefPtr<T> ClientHandler::GetHandler(const char* class_name) {
                                 true /* should_delete */, className.c_str());
     result = jhandler.GetOrCreateCefObject();
   }
-  END_ENV(env)
+
   return result;
 }
 
@@ -122,13 +145,20 @@ bool ClientHandler::OnProcessMessageReceived(
     CefRefPtr<CefFrame> frame,
     CefProcessId source_process,
     CefRefPtr<CefProcessMessage> message) {
-  std::set<CefRefPtr<CefMessageRouterBrowserSide>>::iterator iter;
   bool handled = false;
 
-  base::AutoLock lock_scope(lock_);
-  for (iter = message_router_.begin(); iter != message_router_.end(); iter++) {
-    handled = (*iter)->OnProcessMessageReceived(browser, frame, source_process,
-                                                message);
+  // Iterate on a copy of |message_routers_| to avoid re-entrancy of
+  // |message_router_lock_| if the client CefMessageRouterHandler impl
+  // calls CefClientHandler.addMessageRouter/removeMessageRouter.
+  MessageRouterSet message_routers;
+  {
+    base::AutoLock lock_scope(message_router_lock_);
+    message_routers = message_routers_;
+  }
+
+  for (auto& router : message_routers) {
+    handled = router->OnProcessMessageReceived(browser, frame, source_process,
+                                               message);
     if (handled)
       break;
   }
@@ -140,18 +170,17 @@ CefRefPtr<WindowHandler> ClientHandler::GetWindowHandler() {
 }
 
 void ClientHandler::AddMessageRouter(JNIEnv* env, jobject jmessageRouter) {
-  CefRefPtr<CefMessageRouterBrowserSide> router =
-      GetCefFromJNIObject<CefMessageRouterBrowserSide>(env, jmessageRouter,
-                                                       "CefMessageRouter");
-  if (!router.get())
+  CefRefPtr<CefMessageRouter> router = GetMessageRouter(env, jmessageRouter);
+  if (!router)
     return;
 
-  CefMessageRouterConfig config =
-      GetJNIMessageRouterConfigFromRouter(env, jmessageRouter);
+  CefMessageRouterConfig config = GetMessageRouterConfig(env, jmessageRouter);
 
-  base::AutoLock lock_scope(lock_);
   // 1) Add CefMessageRouterBrowserSide into the list.
-  message_router_.insert(router);
+  {
+    base::AutoLock lock_scope(message_router_lock_);
+    message_routers_.insert(router);
+  }
 
   // 2) Update CefApp for new render-processes.
   BrowserProcessHandler::AddMessageRouterConfig(config);
@@ -174,18 +203,17 @@ void ClientHandler::AddMessageRouter(JNIEnv* env, jobject jmessageRouter) {
 }
 
 void ClientHandler::RemoveMessageRouter(JNIEnv* env, jobject jmessageRouter) {
-  CefRefPtr<CefMessageRouterBrowserSide> router =
-      GetCefFromJNIObject<CefMessageRouterBrowserSide>(env, jmessageRouter,
-                                                       "CefMessageRouter");
-  if (!router.get())
+  CefRefPtr<CefMessageRouter> router = GetMessageRouter(env, jmessageRouter);
+  if (!router)
     return;
 
-  CefMessageRouterConfig config =
-      GetJNIMessageRouterConfigFromRouter(env, jmessageRouter);
+  CefMessageRouterConfig config = GetMessageRouterConfig(env, jmessageRouter);
 
-  base::AutoLock lock_scope(lock_);
   // 1) Remove CefMessageRouterBrowserSide from the list.
-  message_router_.erase(router);
+  {
+    base::AutoLock lock_scope(message_router_lock_);
+    message_routers_.erase(router);
+  }
 
   // 2) Update CefApp.
   BrowserProcessHandler::RemoveMessageRouterConfig(config);
@@ -212,27 +240,28 @@ void ClientHandler::OnAfterCreated() {}
 void ClientHandler::OnBeforeClose(CefRefPtr<CefBrowser> browser) {
   REQUIRE_UI_THREAD();
 
-  base::AutoLock lock_scope(lock_);
-  std::set<CefRefPtr<CefMessageRouterBrowserSide>>::iterator iter;
-  for (iter = message_router_.begin(); iter != message_router_.end(); iter++) {
-    (*iter)->OnBeforeClose(browser);
+  base::AutoLock lock_scope(message_router_lock_);
+  for (auto& router : message_routers_) {
+    router->OnBeforeClose(browser);
   }
 }
 
 void ClientHandler::OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
                                    CefRefPtr<CefFrame> frame) {
-  base::AutoLock lock_scope(lock_);
-  std::set<CefRefPtr<CefMessageRouterBrowserSide>>::iterator iter;
-  for (iter = message_router_.begin(); iter != message_router_.end(); iter++) {
-    (*iter)->OnBeforeBrowse(browser, frame);
+  REQUIRE_UI_THREAD();
+
+  base::AutoLock lock_scope(message_router_lock_);
+  for (auto& router : message_routers_) {
+    router->OnBeforeBrowse(browser, frame);
   }
 }
 
 void ClientHandler::OnRenderProcessTerminated(CefRefPtr<CefBrowser> browser) {
-  base::AutoLock lock_scope(lock_);
-  std::set<CefRefPtr<CefMessageRouterBrowserSide>>::iterator iter;
-  for (iter = message_router_.begin(); iter != message_router_.end(); iter++) {
-    (*iter)->OnRenderProcessTerminated(browser);
+  REQUIRE_UI_THREAD();
+
+  base::AutoLock lock_scope(message_router_lock_);
+  for (auto& router : message_routers_) {
+    router->OnRenderProcessTerminated(browser);
   }
 }
 

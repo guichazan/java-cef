@@ -12,16 +12,6 @@
 
 namespace {
 
-// JNI CefAuthCallback object.
-class ScopedJNIAuthCallback : public ScopedJNIObject<CefAuthCallback> {
- public:
-  ScopedJNIAuthCallback(JNIEnv* env, CefRefPtr<CefAuthCallback> obj)
-      : ScopedJNIObject<CefAuthCallback>(env,
-                                         obj,
-                                         "org/cef/callback/CefAuthCallback_N",
-                                         "CefAuthCallback") {}
-};
-
 // JNI CefRequestCallback object.
 class ScopedJNIRequestCallback : public ScopedJNIObject<CefRequestCallback> {
  public:
@@ -48,7 +38,7 @@ bool RequestHandler::OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
       (ClientHandler*)browser->GetHost()->GetClient().get();
   client->OnBeforeBrowse(browser, frame);
 
-  JNIEnv* env = GetJNIEnv();
+  ScopedJNIEnv env;
   if (!env)
     return false;
 
@@ -77,7 +67,7 @@ CefRefPtr<CefResourceRequestHandler> RequestHandler::GetResourceRequestHandler(
     bool is_download,
     const CefString& request_initiator,
     bool& disable_default_handling) {
-  JNIEnv* env = GetJNIEnv();
+  ScopedJNIEnv env;
   if (!env)
     return NULL;
 
@@ -107,34 +97,33 @@ CefRefPtr<CefResourceRequestHandler> RequestHandler::GetResourceRequestHandler(
 }
 
 bool RequestHandler::GetAuthCredentials(CefRefPtr<CefBrowser> browser,
-                                        CefRefPtr<CefFrame> frame,
+                                        const CefString& origin_url,
                                         bool isProxy,
                                         const CefString& host,
                                         int port,
                                         const CefString& realm,
                                         const CefString& scheme,
                                         CefRefPtr<CefAuthCallback> callback) {
-  JNIEnv* env = GetJNIEnv();
+  ScopedJNIEnv env;
   if (!env)
     return false;
 
   ScopedJNIBrowser jbrowser(env, browser);
-  ScopedJNIFrame jframe(env, frame);
-  jframe.SetTemporary();
+  ScopedJNIString joriginUrl(env, origin_url);
   ScopedJNIString jhost(env, host);
   ScopedJNIString jrealm(env, host);
   ScopedJNIString jscheme(env, host);
   ScopedJNIAuthCallback jcallback(env, callback);
   jboolean jresult = JNI_FALSE;
 
-  JNI_CALL_METHOD(env, handle_, "getAuthCredentials",
-                  "(Lorg/cef/browser/CefBrowser;Lorg/cef/browser/"
-                  "CefFrame;ZLjava/lang/String;"
-                  "ILjava/lang/String;Ljava/lang/String;"
-                  "Lorg/cef/callback/CefAuthCallback;)Z",
-                  Boolean, jresult, jbrowser.get(), jframe.get(),
-                  (isProxy ? JNI_TRUE : JNI_FALSE), jhost.get(), port,
-                  jrealm.get(), jscheme.get(), jcallback.get());
+  JNI_CALL_METHOD(
+      env, handle_, "getAuthCredentials",
+      "(Lorg/cef/browser/CefBrowser;Ljava/lang/String;ZLjava/lang/String;"
+      "ILjava/lang/String;Ljava/lang/String;"
+      "Lorg/cef/callback/CefAuthCallback;)Z",
+      Boolean, jresult, jbrowser.get(), joriginUrl.get(),
+      (isProxy ? JNI_TRUE : JNI_FALSE), jhost.get(), port, jrealm.get(),
+      jscheme.get(), jcallback.get());
 
   if (jresult == JNI_FALSE) {
     // If the Java method returns "false" the callback won't be used and
@@ -149,7 +138,7 @@ bool RequestHandler::OnQuotaRequest(CefRefPtr<CefBrowser> browser,
                                     const CefString& origin_url,
                                     int64 new_size,
                                     CefRefPtr<CefRequestCallback> callback) {
-  JNIEnv* env = GetJNIEnv();
+  ScopedJNIEnv env;
   if (!env)
     return false;
 
@@ -179,7 +168,7 @@ bool RequestHandler::OnCertificateError(
     const CefString& request_url,
     CefRefPtr<CefSSLInfo> ssl_info,
     CefRefPtr<CefRequestCallback> callback) {
-  JNIEnv* env = GetJNIEnv();
+  ScopedJNIEnv env;
   if (!env)
     return false;
 
@@ -207,7 +196,7 @@ bool RequestHandler::OnCertificateError(
 
 void RequestHandler::OnPluginCrashed(CefRefPtr<CefBrowser> browser,
                                      const CefString& plugin_path) {
-  JNIEnv* env = GetJNIEnv();
+  ScopedJNIEnv env;
   if (!env)
     return;
 
@@ -226,7 +215,7 @@ void RequestHandler::OnRenderProcessTerminated(CefRefPtr<CefBrowser> browser,
       (ClientHandler*)browser->GetHost()->GetClient().get();
   client->OnRenderProcessTerminated(browser);
 
-  JNIEnv* env = GetJNIEnv();
+  ScopedJNIEnv env;
   if (!env)
     return;
 
